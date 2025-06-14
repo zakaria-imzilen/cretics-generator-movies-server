@@ -2,9 +2,17 @@
 
 This backend generates creative movie reviews using HuggingFace GPT-2 and serves them via a FastAPI REST API.
 
-## 🚀 Running the App
+# 2⃣ (create and) activate an isolated environment
 
-```bash
+# MacOS
+python -m venv .venv
+# (Windows ⇒ .venv\Scripts\activate)
+
+source .venv/bin/activate
+
+# 3⃣ install the dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
-uvicorn main:app --reload
-```
+
+# 4⃣ launch the FastAPI server with auto-reload
+uvicorn main:app --reload --port 8000
