@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from api.routes.reviews_route import router as reviews_router  # 👈 Use underscore
+
 
 app = FastAPI()
 
-@app.get("/")
-def root():
-    return {"message": "Movie Review Generator API"}
+# Include the router from another file
+app.include_router(reviews_router)

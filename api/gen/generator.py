@@ -236,43 +236,8 @@ class MovieReviewGenerator:
             context = self._get_movie_context(movie_title)
             return f"{movie_title} is a {context['genre'].lower()} film directed by {context['director']}. The movie presents {context['plot']} with solid performances from {context['stars']}. It's a well-crafted film that delivers on its promises."
 
+generator = MovieReviewGenerator()
 # Convenience function
 def generateMovieReview(movie_title: str, max_new_tokens: int = 100) -> str:
     """Generate movie review - simple interface."""
-    generator = MovieReviewGenerator()
     return generator.generate_review(movie_title)
-
-# CLI interface
-def main():
-    """Main CLI interface."""
-    import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python generator.py 'Movie Title'")
-        print("Example: python generator.py 'Titanic'")
-        print("\nSupported movies with enhanced context:")
-        print("- Titanic, Avatar, Inception, The Dark Knight")
-        print("\nEnvironment variables:")
-        print("- MODEL_ID (default: gpt2)")
-        sys.exit(1)
-    
-    movie_title = " ".join(sys.argv[1:])
-    
-    try:
-        print(f"\n🎬 Generating review for: '{movie_title}'")
-        print("=" * 60)
-        
-        generator = MovieReviewGenerator()
-        review = generator.generate_review(movie_title)
-        
-        print(f"\n📝 Movie Review: {movie_title}")
-        print("-" * 60)
-        print(review)
-        print("-" * 60)
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
