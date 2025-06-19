@@ -3,3 +3,5 @@ uvicorn
 transformers
 torch
 pydantic
+dotenv
+datasets
