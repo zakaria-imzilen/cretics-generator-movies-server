@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from dotenv import load_dotenv
 from datasets import load_dataset
+from transformers import pipeline
 
 # Configure logging
 logging.basicConfig(
@@ -14,10 +15,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 
 # Load environment variables
 load_dotenv()
-OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 
 @dataclass
 class ReviewConfig:
@@ -33,11 +34,14 @@ class MovieReviewGenerator:
     """Generator for concise, structured movie reviews (not summaries)."""
     def __init__(self, model_id: Optional[str] = None):
         self.model_id = model_id or os.getenv("MODEL_ID")
+        self.model_sentiment = os.getenv("SENTIMENT_MODEL")
+        self.omdb_api_key = os.getenv("OMDB_API_KEY")
         self.config = ReviewConfig()
         self._tokenizer = None
         self._model = None
         self._generator = None
         self._imdb_dataset = None
+        self._sentiment_classifier= None
 
     @property
     def tokenizer(self):
@@ -56,6 +60,11 @@ class MovieReviewGenerator:
         if self._imdb_dataset is None:
             self._initialize_dataset()
         return self._imdb_dataset
+    @property
+    def sentiment_classifier(self):
+        if self._sentiment_classifier is None:
+            self._initialize_model()
+        return self._sentiment_classifier
 
     def _initialize_model(self):
         try:
@@ -72,9 +81,16 @@ class MovieReviewGenerator:
                 pad_token_id=self._tokenizer.eos_token_id,
                 return_full_text=False
             )
+            if self.model_sentiment:
+                logger.info(f"Loading sentiment model: {self.model_sentiment}")
+                self._sentiment_classifier = pipeline("sentiment-analysis", model=self.model_sentiment)
+            else:
+                logger.warning("SENTIMENT_MODEL not defined in environment variables")
+
             logger.info("Model loaded successfully")
         except Exception as e:
             logger.error(f"Model loading failed: {e}")
+            logger.error(traceback.format_exc())
             raise RuntimeError(f"Failed to load model: {e}")
 
     def _initialize_dataset(self):
@@ -89,19 +105,20 @@ class MovieReviewGenerator:
     def _get_movie_context(self, movie_title: str) -> Dict[str, Any]:
         """Fetch movie facts from OMDb to ensure factual accuracy."""
         context = {"director": "Unknown", "stars": [], "genre": "film", "plot": "story"}
-        if OMDB_API_KEY:
-            try:
+        logger.info(f"OMDb API KEY '{movie_title}': {self.omdb_api_key}")
+        try:
                 resp = requests.get(
                     "http://www.omdbapi.com/",
-                    params={"t": movie_title, "apikey": OMDB_API_KEY}
+                    params={"t": movie_title, "apikey": self.omdb_api_key}
                 )
                 data = resp.json()
+                logger.info(f"OMDb data '{movie_title}': {data}")
                 context["director"] = data.get("Director", context["director"])
                 cast_list = data.get("Actors", "").split(", ")
                 context["stars"] = cast_list if cast_list else context["stars"]
                 context["genre"] = data.get("Genre", context["genre"])
                 context["plot"] = data.get("Plot", context["plot"])
-            except Exception as e:
+        except Exception as e:
                 logger.warning(f"OMDb lookup failed: {e}")
         return context
 
@@ -110,6 +127,7 @@ class MovieReviewGenerator:
         title = movie_title.lower().strip()
         patterns = [re.compile(rf"\b{re.escape(title)}\b", re.IGNORECASE)]
         pos, neg = 0, 0
+
         for i, item in enumerate(self.imdb_dataset['train']):
             if i >= 1000:
                 break
@@ -121,11 +139,33 @@ class MovieReviewGenerator:
                     neg += 1
                 if pos + neg >= 5:
                     break
+
         if pos > neg:
-            return "generally well-received"
-        if neg > pos:
-            return "received mixed reactions"
-        return "has divided critics"
+            sentiment = "generally well-received"
+        elif neg > pos:
+            sentiment = "received mixed reactions"
+        else:
+            # Fallback to OMDb
+            context = self._get_movie_context(movie_title)
+            logger.info(f"OMDb context for '{movie_title}': {context}")
+            try:
+                rating_str = context.get("imdbRating", "N/A")
+                rating = float(rating_str)
+                logger.info(f"_rating '{movie_title}' -> parsed rating: {rating}")
+                if rating >= 7.0:
+                    sentiment = "generally well-received"
+                elif rating >= 4.5:
+                    sentiment = "received mixed reactions"
+                else:
+                    sentiment = "was widely criticized"
+            except Exception as e:
+                logger.warning(f"Could not parse rating for '{movie_title}': {e}")
+                sentiment = "has divided critics"
+
+        logger.info(f"_find_relevant_sentiment: Movie '{movie_title}' -> sentiment: '{sentiment}' (pos={pos}, neg={neg})")
+        return sentiment
+
+   
 
     def _create_structured_prompt(self, movie_title: str) -> str:
         sentiment = self._find_relevant_sentiment(movie_title)
@@ -133,17 +173,22 @@ class MovieReviewGenerator:
         cast_str = ", ".join(context['stars']) if context['stars'] else 'Cast information unavailable'
 
         prompt = (
-            f"You are a seasoned film critic. Write a concise, engaging REVIEW of '{movie_title}' "
-            f"(not a summary). ONLY use the facts provided below; do NOT invent any other names, roles, or plot points.\n"
-            f"Director: {context['director']}\n"
-            f"Cast: {cast_str}\n"
-            "Follow this format strictly:\n"
-            "1. Quick Synopsis (1–2 sentences, no spoilers)\n"
-            "2. Key Highlights (acting, direction, visuals in 2–3 sentences)\n"
-            f"3. Theme & Takeaway (1–2 sentences; include sentiment: {sentiment})\n"
-            "4. Final Score (out of 5★)\n"
-            "Keep under ~120 words. Start below exactly as shown (no extra headings):\nReview:"""
-        )
+        f"You are a seasoned film critic. Write a concise, engaging REVIEW of '{movie_title}' "
+        f"(not a summary). ONLY use the facts provided below. Do NOT invent any other names, roles, or plot elements. "
+        f"If you mention anything not in the facts, you will be penalized.\n\n"
+        f"Director: {context['director']}\n"
+        f"Cast: {cast_str}\n"
+        f"Genre: {context['genre']}\n"
+        f"Plot: {context['plot']}\n\n"
+        "Follow this format strictly:\n"
+        "1. Quick Synopsis (1–2 sentences, no spoilers)\n"
+        "2. Key Highlights (acting, direction, visuals in 2–3 sentences)\n"
+        f"3. Theme & Takeaway (1–2 sentences; include sentiment: {sentiment})\n"
+        "4. Final Score (out of 5★)\n"
+        "Keep under ~120 words. Start below exactly as shown (no extra headings):\n"
+        "Review:"
+)
+
         logger.info(f"Structured prompt created: {prompt[:100]}...")
         return prompt
 
@@ -184,12 +229,36 @@ class MovieReviewGenerator:
             )
             raw = outputs[0]["generated_text"]
             logger.info(f"Raw output: {raw[:80]}...")
-            return self._clean_and_validate_review(raw, movie_title)
+            # Clean and validate review
+            review = self._clean_and_validate_review(raw, movie_title)
+
+            # 🔍 Sentiment classification
+            sentiment_result = self.sentiment_classifier(review)[0]
+            sentiment = sentiment_result["label"]  # POSITIVE or NEGATIVE
+            confidence = round(sentiment_result["score"], 3)
+
+            # ✅ Return review + sentiment
+            return {
+            "review": review,
+            "sentiment": sentiment,
+            "confidence": confidence
+            }
         except Exception as e:
             logger.error(f"Generation failed: {e}")
-            return f"{movie_title} is a noteworthy film with engaging performances and solid direction."
+            fallback_review = f"{movie_title} is a noteworthy film with engaging performances and solid direction."
+
+            # Even if generation fails, try to classify the fallback review
+            sentiment_result = self._sentiment_classifier(fallback_review)[0]
+            sentiment = sentiment_result["label"]
+            confidence = round(sentiment_result["score"], 3)
+
+        return {
+            "review": fallback_review,
+            "sentiment": sentiment,
+            "confidence": confidence
+        }
 
 # Simple interface
 generator = MovieReviewGenerator()
-def generateMovieReview(movie_title: str) -> str:
+def generateMovieReview(movie_title: str) -> Dict[str, Any]:
     return generator.generate_review(movie_title)
