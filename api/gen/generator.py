@@ -133,10 +133,10 @@ class MovieReviewGenerator:
                 break
             text = item.get('text', '')
             if patterns[0].search(text):
-                if item.get('label', 0) == 1:
+                if item.get('label', 0) == 1: # if label == 1 -> review is positive
                     pos += 1
                 else:
-                    neg += 1
+                    neg += 1 # else label == 0 -> review is negative
                 if pos + neg >= 5:
                     break
 
